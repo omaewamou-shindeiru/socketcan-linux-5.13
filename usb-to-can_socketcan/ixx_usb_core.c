@@ -213,6 +213,7 @@ static void ixxat_usb_write_bulk_callback(struct urb *urb)
         struct ixx_tx_urb_context *context = urb->context;
         struct ixx_usb_device *dev;
         struct net_device *netdev;
+        int tx_bytes;
 
         BUG_ON(!context);
 
@@ -227,10 +228,6 @@ static void ixxat_usb_write_bulk_callback(struct urb *urb)
         /* check tx status */
         switch (urb->status) {
         case 0:
-                /* transmission complete */
-                netdev->stats.tx_packets += context->count;
-                netdev->stats.tx_bytes += context->dlc;
-
                 /* prevent tx timeout */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
                 netif_trans_update(netdev);
@@ -253,12 +250,17 @@ static void ixxat_usb_write_bulk_callback(struct urb *urb)
         }
 
         /* should always release echo skb and corresponding context */
-        can_get_echo_skb(netdev, context->echo_index);
+        tx_bytes = can_get_echo_skb(netdev, context->echo_index, NULL);
         context->echo_index = IXXAT_USB_MAX_TX_URBS;
 
-        /* do wakeup tx queue in case of success only */
-        if (!urb->status)
+        if (!urb->status) {
+                /* transmission complete */
+		netdev->stats.tx_packets += context->count;
+		netdev->stats.tx_bytes += tx_bytes;
+
+                /* do wakeup tx queue in case of success only */
                 netif_wake_queue(netdev);
+        }
 }
 
 /*
@@ -312,13 +314,13 @@ static netdev_tx_t ixxat_usb_ndo_start_xmit(struct sk_buff *skb,
 
         usb_anchor_urb(urb, &dev->tx_submitted);
 
-        can_put_echo_skb(skb, netdev, context->echo_index);
+        can_put_echo_skb(skb, netdev, context->echo_index, 0);
 
         atomic_inc(&dev->active_tx_urbs);
 
         err = usb_submit_urb(urb, GFP_ATOMIC);
         if (err) {
-                can_free_echo_skb(netdev, context->echo_index);
+                can_free_echo_skb(netdev, context->echo_index, NULL);
 
                 usb_unanchor_urb(urb);
 
